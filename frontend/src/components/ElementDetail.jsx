@@ -4,56 +4,109 @@ import TagsEditor from "./TagsEditor.jsx";
 import LinksPanel from "./LinksPanel.jsx";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-import katex from "katex";
 import renderMathInElement from "katex/contrib/auto-render";
 import "katex/dist/katex.min.css";
 
-// Optional: include only if it exists in your katex install
-// import "katex/dist/contrib/auto-render.css";
+/* ------------------------------------------------------------
+   Shared button style
+------------------------------------------------------------ */
 
-function LatexText({ text }) {
+const buttonStyle = {
+  padding: "6px 12px",
+  fontSize: 13,
+  borderRadius: 4,
+  border: "1px solid #ccc",
+  background: "#f8f8f8",
+  cursor: "pointer",
+  lineHeight: 1.2,
+};
+
+const dangerButtonStyle = {
+  ...buttonStyle,
+  borderColor: "#c88",
+  background: "#fff5f5",
+};
+
+/* ------------------------------------------------------------
+   Markdown + LaTeX renderer
+------------------------------------------------------------ */
+
+function MarkdownLatex({ text }) {
   const ref = useRef(null);
 
   useEffect(() => {
     if (!ref.current) return;
-    ref.current.textContent = text ?? "";
+
+    const src = text ?? "";
+
+    // Extract math *before* markdown can split it with <p>/<br>.
+    const math = [];
+    const placeholder = (i) => `@@MATH_${i}@@`;
+
+    // Do display first, then inline.
+    const patterns = [
+      /\$\$[\s\S]*?\$\$/g,      // $$...$$
+      /\\\[[\s\S]*?\\\]/g,      // \[...\]
+      /\\\([\s\S]*?\\\)/g,      // \(...\)
+      /\$[^$\n]+\$/g,           // $...$ (single-line inline; avoids greedy multiline weirdness)
+    ];
+
+    let protectedText = src;
+    for (const re of patterns) {
+      protectedText = protectedText.replace(re, (m) => {
+        const i = math.length;
+        math.push(m);
+        return placeholder(i);
+      });
+    }
+
+    // Markdown -> HTML -> sanitize
+    const html = marked.parse(protectedText);
+    let safe = DOMPurify.sanitize(html);
+
+    // Restore math chunks
+    safe = safe.replace(/@@MATH_(\d+)@@/g, (_, n) => math[Number(n)] ?? "");
+
+    // Inject then KaTeX autorender
+    ref.current.innerHTML = safe;
+
     renderMathInElement(ref.current, {
       delimiters: [
         { left: "\\[", right: "\\]", display: true },
-        { left: "\\(", right: "\\)", display: false },
         { left: "$$", right: "$$", display: true },
+        { left: "\\(", right: "\\)", display: false },
         { left: "$", right: "$", display: false },
-        ],
+      ],
       throwOnError: false,
       strict: "warn",
     });
   }, [text]);
 
-  return <div ref={ref} style={{ whiteSpace: "pre-wrap" }} />;
+  return <div ref={ref} />;
 }
+
+/* ------------------------------------------------------------
+   Body renderer
+------------------------------------------------------------ */
 
 function renderBody(format, body) {
   const fmt = (format || "plain").toLowerCase();
   const text = body ?? "";
 
-  if (fmt === "markdown") {
-    const html = marked.parse(text);
-    const safe = DOMPurify.sanitize(html);
-    return <div dangerouslySetInnerHTML={{ __html: safe }} />;
+  if (fmt === "markdown" || fmt === "latex") {
+    return <MarkdownLatex text={text} />;
   }
 
   if (fmt === "html") {
-    const safe = DOMPurify.sanitize(text);
-    return <div dangerouslySetInnerHTML={{ __html: safe }} />;
-  }
-
-  if (fmt === "latex") {
-    // text + TeX delimiters
-    return <LatexText text={text} />;
+    return <div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(text) }} />;
   }
 
   return <pre style={{ whiteSpace: "pre-wrap" }}>{text}</pre>;
 }
+
+/* ------------------------------------------------------------
+   Constants
+------------------------------------------------------------ */
 
 const TYPES = [
   "definition",
@@ -71,12 +124,16 @@ const TYPES = [
 
 const FORMATS = ["plain", "markdown", "html", "latex"];
 
+/* ------------------------------------------------------------
+   Main component
+------------------------------------------------------------ */
+
 export default function ElementDetail({ id, onUpdated }) {
   const [e, setE] = useState(null);
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
-
   const [editing, setEditing] = useState(false);
+
   const [draft, setDraft] = useState({
     type: "theorem",
     format: "plain",
@@ -112,13 +169,7 @@ export default function ElementDetail({ id, onUpdated }) {
     setMsg("");
     setBusy(true);
     try {
-      const payload = {
-        type: draft.type,
-        format: draft.format,
-        title: draft.title,
-        body: draft.body,
-      };
-      await updateElement(id, payload);
+      await updateElement(id, draft);
       const fresh = await getElement(id);
       setE(fresh);
       setEditing(false);
@@ -149,35 +200,65 @@ export default function ElementDetail({ id, onUpdated }) {
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          gap: 12,
+          alignItems: "flex-start",
+        }}
+      >
         <div>
           <h2 style={{ marginTop: 0, marginBottom: 6 }}>{e.title}</h2>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+
+          <div
+            style={{
+              display: "flex",
+              gap: 8,
+              alignItems: "center",
+              marginBottom: 8,
+            }}
+          >
             <code style={{ fontSize: 12, color: "#555" }}>{e.id}</code>
             <button
+              style={buttonStyle}
               onClick={() => navigator.clipboard.writeText(e.id)}
-              style={{ fontSize: 12, padding: "4px 8px" }}
             >
               Copy ID
             </button>
           </div>
+
           <p style={{ marginTop: 0 }}>
             <b>{e.type}</b>{" "}
-            {e.format && e.format !== "plain" ? (
+            {e.format !== "plain" && (
               <span style={{ color: "#888" }}>[{e.format}]</span>
-            ) : null}
+            )}
           </p>
         </div>
 
-        <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            alignItems: "flex-start",
+          }}
+        >
           {!editing ? (
-            <button onClick={() => setEditing(true)}>Edit</button>
+            <button style={buttonStyle} onClick={() => setEditing(true)}>
+              Edit
+            </button>
           ) : (
             <>
-              <button onClick={handleSave} disabled={busy}>
+              <button
+                style={buttonStyle}
+                onClick={handleSave}
+                disabled={busy}
+              >
                 {busy ? "Saving…" : "Save"}
               </button>
               <button
+                style={buttonStyle}
+                disabled={busy}
                 onClick={() => {
                   setEditing(false);
                   setDraft({
@@ -188,19 +269,26 @@ export default function ElementDetail({ id, onUpdated }) {
                   });
                   setMsg("");
                 }}
-                disabled={busy}
               >
                 Cancel
               </button>
             </>
           )}
-          <button onClick={handleDelete} disabled={busy}>
+          <button
+            style={dangerButtonStyle}
+            onClick={handleDelete}
+            disabled={busy}
+          >
             Delete
           </button>
         </div>
       </div>
 
-      {msg ? <div style={{ color: msg === "Saved." ? "#060" : "#b00" }}>{msg}</div> : null}
+      {msg && (
+        <div style={{ color: msg === "Saved." ? "#060" : "#b00", marginTop: 8 }}>
+          {msg}
+        </div>
+      )}
 
       {!editing ? (
         <div style={{ marginTop: 12 }}>{renderBody(e.format, e.body)}</div>
@@ -208,10 +296,12 @@ export default function ElementDetail({ id, onUpdated }) {
         <div style={{ marginTop: 12 }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <label>
-              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Type</div>
+              <div style={{ fontSize: 12, fontWeight: 600 }}>Type</div>
               <select
                 value={draft.type}
-                onChange={(ev) => setDraft((d) => ({ ...d, type: ev.target.value }))}
+                onChange={(e) =>
+                  setDraft((d) => ({ ...d, type: e.target.value }))
+                }
                 style={{ width: "100%", padding: 10 }}
               >
                 {TYPES.map((t) => (
@@ -223,10 +313,12 @@ export default function ElementDetail({ id, onUpdated }) {
             </label>
 
             <label>
-              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Format</div>
+              <div style={{ fontSize: 12, fontWeight: 600 }}>Format</div>
               <select
                 value={draft.format}
-                onChange={(ev) => setDraft((d) => ({ ...d, format: ev.target.value }))}
+                onChange={(e) =>
+                  setDraft((d) => ({ ...d, format: e.target.value }))
+                }
                 style={{ width: "100%", padding: 10 }}
               >
                 {FORMATS.map((f) => (
@@ -239,30 +331,35 @@ export default function ElementDetail({ id, onUpdated }) {
           </div>
 
           <label style={{ display: "block", marginTop: 12 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Title</div>
+            <div style={{ fontSize: 12, fontWeight: 600 }}>Title</div>
             <input
               value={draft.title}
-              onChange={(ev) => setDraft((d) => ({ ...d, title: ev.target.value }))}
+              onChange={(e) =>
+                setDraft((d) => ({ ...d, title: e.target.value }))
+              }
               style={{ width: "100%", padding: 10 }}
             />
           </label>
 
           <label style={{ display: "block", marginTop: 12 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Body</div>
+            <div style={{ fontSize: 12, fontWeight: 600 }}>Body</div>
             <textarea
               rows={14}
               value={draft.body}
-              onChange={(ev) => setDraft((d) => ({ ...d, body: ev.target.value }))}
+              onChange={(e) =>
+                setDraft((d) => ({ ...d, body: e.target.value }))
+              }
               style={{
                 width: "100%",
                 padding: 10,
-                fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                fontFamily:
+                  "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
               }}
             />
           </label>
 
-          <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid #ddd" }}>
-            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, color: "#666" }}>
+          <div style={{ marginTop: 12, borderTop: "1px solid #ddd", paddingTop: 12 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#666" }}>
               Preview
             </div>
             {renderBody(draft.format, draft.body)}
